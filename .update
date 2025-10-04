@@ -1,0 +1,4 @@
+#!/bin/bash
+# .update command - Monolith System Update Manager
+
+/home/thommy/.claude/update-production.sh "$@"
