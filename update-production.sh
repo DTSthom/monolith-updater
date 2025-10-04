@@ -295,7 +295,6 @@ apply_updates() {
                 if [[ -n "$safe_packages" ]]; then
                     if sudo apt upgrade -y "$safe_packages"; then
                         log "Safe APT updates completed"
-                        echo -e "${GREEN}✅ APT safe updates completed${NC}"
                     else
                         log "ERROR: Safe APT updates failed"
                         echo -e "${RED}❌ APT updates failed${NC}"
@@ -318,7 +317,6 @@ apply_updates() {
                 if [[ -n "$high_packages" ]]; then
                     if sudo apt upgrade -y "$high_packages"; then
                         log "High priority APT updates completed"
-                        echo -e "${GREEN}✅ High priority updates completed${NC}"
                     else
                         log "ERROR: High priority updates failed"
                         echo -e "${RED}❌ High priority updates failed${NC}"
@@ -336,14 +334,11 @@ apply_updates() {
                 if [[ -n "$critical_packages" ]]; then
                     if sudo apt upgrade -y "$critical_packages"; then
                         log "Critical security updates completed"
-                        echo -e "${GREEN}✅ Critical updates completed${NC}"
                     else
                         log "ERROR: Critical updates failed"
                         echo -e "${RED}❌ Critical updates failed${NC}"
                         ((errors++))
                     fi
-                else
-                    echo -e "${GREEN}✅ No critical updates available${NC}"
                 fi
             fi
             ;;
@@ -354,7 +349,6 @@ apply_updates() {
             # APT all
             if sudo apt update && sudo apt upgrade -y; then
                 log "APT all updates completed"
-                echo -e "${GREEN}✅ APT updates completed${NC}"
             else
                 log "ERROR: APT updates failed"
                 echo -e "${RED}❌ APT updates failed${NC}"
@@ -364,7 +358,6 @@ apply_updates() {
             # Snap
             if sudo snap refresh 2>/dev/null; then
                 log "Snap updates completed"
-                echo -e "${GREEN}✅ Snap updates completed${NC}"
             else
                 log "WARNING: Snap updates failed or not installed"
             fi
@@ -373,7 +366,6 @@ apply_updates() {
             if command -v flatpak &> /dev/null; then
                 if flatpak update -y 2>/dev/null; then
                     log "Flatpak updates completed"
-                    echo -e "${GREEN}✅ Flatpak updates completed${NC}"
                 else
                     log "WARNING: Flatpak updates failed"
                 fi
@@ -383,7 +375,6 @@ apply_updates() {
             if command -v npm &> /dev/null; then
                 if npm update -g 2>/dev/null; then
                     log "NPM global updates completed"
-                    echo -e "${GREEN}✅ NPM updates completed${NC}"
                 else
                     log "WARNING: NPM updates failed"
                 fi
@@ -398,8 +389,8 @@ apply_updates() {
 
     echo ""
     if [[ $errors -eq 0 ]]; then
-        log "Updates completed successfully"
         show_success_screen "$mode"
+        log "Updates completed successfully"
     else
         log "ERROR: Updates completed with $errors error(s)"
         echo -e "${RED}⚠️  Updates completed with $errors error(s)${NC}"
