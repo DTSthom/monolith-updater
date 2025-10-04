@@ -44,7 +44,7 @@ git clone https://github.com/yourusername/monolith-updater.git
 cd monolith-updater
 
 # Install to ~/.claude directory
-cp .update ~/.claude/dot-update.sh
+cp dot-update.sh ~/.claude/dot-update.sh
 cp update-production.sh ~/.claude/update-production.sh
 chmod +x ~/.claude/dot-update.sh ~/.claude/update-production.sh
 
@@ -105,15 +105,15 @@ Type commands directly (no `.update` prefix needed in interactive mode).
 
 ```
 monolith-updater/
-├── .update                  # Entry point wrapper (110 bytes)
-├── update-production.sh     # Main implementation (15KB)
-├── README.md               # This file
-└── VERSION                 # Version history and journey documentation
+├── dot-update.sh           # Entry point wrapper
+├── update-production.sh    # Main implementation (15KB)
+├── README.md              # This file
+└── VERSION                # Version history and journey documentation
 ```
 
 ### How It Works
 
-1. **`.update`** - Wrapper script that calls the main implementation
+1. **`dot-update.sh`** - Wrapper script that calls the main implementation
 2. **`update-production.sh`** - Contains all logic:
    - Package detection and categorization
    - Interactive menu system
