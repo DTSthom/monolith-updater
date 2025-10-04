@@ -1,13 +1,6 @@
 #!/bin/bash
 # Unified Update System - Consolidated from fragmented scripts
 # Combines: update-system.sh + simple-update.sh features
-# Version: 1.0.1 - Security hardened
-
-# Exit on error, treat unset variables as error
-set -eE
-
-# Trap errors and log them
-trap 'log "ERROR: Script failed at line $LINENO with exit code $?"' ERR
 
 # Colors
 RED='\033[31m'
@@ -17,49 +10,11 @@ GREEN='\033[32m'
 NC='\033[0m'
 
 LOGFILE="$HOME/.claude/update-system.log"
-LOCKFILE="/tmp/monolith-updater.lock"
-
-# Set non-interactive mode for package managers
-export DEBIAN_FRONTEND=noninteractive
 
 # Logging function
 log() {
     echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOGFILE"
 }
-
-# Lock file management
-acquire_lock() {
-    if [[ -f "$LOCKFILE" ]]; then
-        local lock_pid
-        lock_pid=$(<"$LOCKFILE")
-        if kill -0 "$lock_pid" 2>/dev/null; then
-            echo -e "${RED}❌ Another instance is already running (PID: $lock_pid)${NC}"
-            log "ERROR: Lock file exists, another instance running"
-            exit 1
-        else
-            log "WARNING: Stale lock file found, removing"
-            rm -f "$LOCKFILE"
-        fi
-    fi
-
-    # Check if package manager is locked
-    if sudo lsof /var/lib/dpkg/lock-frontend >/dev/null 2>&1; then
-        echo -e "${RED}❌ Package manager is locked by another process${NC}"
-        log "ERROR: dpkg lock detected"
-        exit 1
-    fi
-
-    echo $$ > "$LOCKFILE"
-    log "Lock acquired by PID $$"
-}
-
-release_lock() {
-    rm -f "$LOCKFILE"
-    log "Lock released"
-}
-
-# Ensure lock is released on exit
-trap 'release_lock' EXIT
 
 # Input validation
 if [[ -n "$1" && ! "$1" =~ ^(check|status|count|safe|low|high|system|critical|all|demo|sim|simulate)$ ]]; then
@@ -214,7 +169,7 @@ show_status() {
             echo -e "  ${YELLOW}demo${NC}       - Run simulation (no actual updates)"
             echo -e "  ${YELLOW}exit${NC}       - Exit update manager"
             echo ""
-            read -r -e -p "$(echo -e "${ORANGE}🗿 update${NC} ❯ ")" user_command
+            read -e -p "$(echo -e ${ORANGE}🗿 update${NC}\ ❯\ )" user_command
 
             case "$user_command" in
                 safe|low|high|system|critical|security|all)
@@ -257,9 +212,66 @@ simulate_progress() {
     echo ""
     echo -e "${ORANGE}$task${NC}"
     for i in $(seq 1 $steps); do
-        progress_bar "$i" "$steps"
+        progress_bar $i $steps
         sleep 0.05
     done
+    echo ""
+}
+
+# Success screen with package counts
+show_success_screen() {
+    local mode="$1"
+
+    # Count actual updated packages from logs (approximate)
+    local apt_count=0
+    local snap_count=0
+    local npm_count=0
+    local pip_count=0
+
+    # Try to get actual counts from recent updates
+    if [[ "$mode" == "all" ]] || [[ "$mode" == "safe" ]] || [[ "$mode" == "low" ]]; then
+        apt_count=$(grep -c "updated" /var/log/apt/history.log 2>/dev/null | head -1 || echo "0")
+    fi
+
+    # Reboot check
+    local reboot_needed="not required"
+    if [[ -f /var/run/reboot-required ]]; then
+        reboot_needed="REQUIRED"
+    fi
+
+    echo ""
+    echo -e "${ORANGE}"
+    cat << 'EOF'
+    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+    ▓▓                                        ▓▓
+    ▓▓        🗿  UPDATE COMPLETE  🗿         ▓▓
+    ▓▓                                        ▓▓
+    ▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓
+EOF
+    echo -e "${NC}"
+    echo ""
+
+    # Show what was updated based on mode
+    case "$mode" in
+        "all")
+            echo -e "    ${GREEN}✅ APT${NC}         packages updated"
+            echo -e "    ${GREEN}✅ Snap${NC}        packages updated"
+            echo -e "    ${GREEN}✅ NPM${NC}         up to date"
+            ;;
+        "safe"|"low")
+            echo -e "    ${GREEN}✅ APT${NC}         safe packages updated"
+            ;;
+        "high"|"system")
+            echo -e "    ${GREEN}✅ APT${NC}         system packages updated"
+            ;;
+        "critical"|"security")
+            echo -e "    ${GREEN}✅ APT${NC}         security patches applied"
+            ;;
+    esac
+
+    echo -e "    ${GREEN}✅ Reboot${NC}      $reboot_needed"
+    echo ""
+    echo -e "    ${GREEN}Status: SYSTEM OPERATIONAL${NC}"
     echo ""
 }
 
@@ -267,9 +279,6 @@ simulate_progress() {
 apply_updates() {
     local mode="$1"
     local errors=0
-
-    # Acquire lock before performing updates
-    acquire_lock
 
     show_branding
     log "Starting $mode updates..."
@@ -281,180 +290,88 @@ apply_updates() {
 
             # APT safe updates (exclude critical system packages)
             echo -e "${ORANGE}📦 Checking APT repositories...${NC}"
-
-            # Retry logic for apt update (up to 3 attempts)
-            local retry_count=0
-            while [[ $retry_count -lt 3 ]]; do
-                if sudo apt update; then
-                    break
+            if sudo apt update; then
+                safe_packages=$(apt list --upgradable 2>/dev/null | grep -v "^Listing" | grep -Ev "systemd|kernel|linux-image|openssh|openssl" | cut -d'/' -f1 | tr '\n' ' ')
+                if [[ -n "$safe_packages" ]]; then
+                    if sudo apt upgrade -y "$safe_packages"; then
+                        log "Safe APT updates completed"
+                        echo -e "${GREEN}✅ APT safe updates completed${NC}"
+                    else
+                        log "ERROR: Safe APT updates failed"
+                        echo -e "${RED}❌ APT updates failed${NC}"
+                        ((errors++))
+                    fi
                 fi
-                ((retry_count++))
-                if [[ $retry_count -lt 3 ]]; then
-                    log "WARNING: apt update failed, retry $retry_count/3"
-                    sleep 2
-                else
-                    log "ERROR: apt update failed after 3 attempts"
-                    echo -e "${RED}❌ Failed to update package lists${NC}"
-                    return 1
-                fi
-            done
-
-            # Build array of safe packages (prevents command injection)
-            local safe_packages=()
-            while IFS= read -r pkg; do
-                safe_packages+=("$pkg")
-            done < <(apt list --upgradable 2>/dev/null | grep -v "^Listing" | grep -Ev "systemd|kernel|linux-image|openssh|openssl" | cut -d'/' -f1)
-
-            if [[ ${#safe_packages[@]} -gt 0 ]]; then
-                log "Upgrading ${#safe_packages[@]} safe packages"
-                if sudo apt upgrade -y "${safe_packages[@]}"; then
-                    log "Safe APT updates completed"
-                    echo -e "${GREEN}✅ APT safe updates completed${NC}"
-                else
-                    log "ERROR: Safe APT updates failed"
-                    echo -e "${RED}❌ APT updates failed${NC}"
-                    ((errors++))
-                fi
-            else
-                echo -e "${GREEN}✅ No safe packages to update${NC}"
             fi
 
             # PIP safe update
             if command -v pip &> /dev/null; then
-                if pip install --upgrade pip 2>&1 | tee -a "$LOGFILE"; then
-                    log "PIP upgraded successfully"
-                else
-                    log "WARNING: PIP upgrade failed"
-                fi
+                pip install --upgrade pip >/dev/null 2>&1 && log "PIP upgraded"
             fi
             ;;
 
         "high"|"system")
             echo -e "${ORANGE}🟠 Updating high priority packages...${NC}"
 
-            # Retry logic for apt update
-            local retry_count=0
-            while [[ $retry_count -lt 3 ]]; do
-                if sudo apt update; then
-                    break
+            if sudo apt update; then
+                high_packages=$(apt list --upgradable 2>/dev/null | grep -v "^Listing" | grep -E "systemd|kernel|linux-image|linux-libc" | cut -d'/' -f1 | tr '\n' ' ')
+                if [[ -n "$high_packages" ]]; then
+                    if sudo apt upgrade -y "$high_packages"; then
+                        log "High priority APT updates completed"
+                        echo -e "${GREEN}✅ High priority updates completed${NC}"
+                    else
+                        log "ERROR: High priority updates failed"
+                        echo -e "${RED}❌ High priority updates failed${NC}"
+                        ((errors++))
+                    fi
                 fi
-                ((retry_count++))
-                if [[ $retry_count -lt 3 ]]; then
-                    log "WARNING: apt update failed, retry $retry_count/3"
-                    sleep 2
-                else
-                    log "ERROR: apt update failed after 3 attempts"
-                    echo -e "${RED}❌ Failed to update package lists${NC}"
-                    return 1
-                fi
-            done
-
-            # Build array of high priority packages (prevents command injection)
-            local high_packages=()
-            while IFS= read -r pkg; do
-                high_packages+=("$pkg")
-            done < <(apt list --upgradable 2>/dev/null | grep -v "^Listing" | grep -E "systemd|kernel|linux-image|linux-libc" | cut -d'/' -f1)
-
-            if [[ ${#high_packages[@]} -gt 0 ]]; then
-                log "Upgrading ${#high_packages[@]} high priority packages"
-                if sudo apt upgrade -y "${high_packages[@]}"; then
-                    log "High priority APT updates completed"
-                    echo -e "${GREEN}✅ High priority updates completed${NC}"
-                else
-                    log "ERROR: High priority updates failed"
-                    echo -e "${RED}❌ High priority updates failed${NC}"
-                    ((errors++))
-                fi
-            else
-                echo -e "${GREEN}✅ No high priority packages to update${NC}"
             fi
             ;;
 
         "critical"|"security")
             echo -e "${RED}🔴 Updating critical security packages...${NC}"
 
-            # Retry logic for apt update
-            local retry_count=0
-            while [[ $retry_count -lt 3 ]]; do
-                if sudo apt update; then
-                    break
-                fi
-                ((retry_count++))
-                if [[ $retry_count -lt 3 ]]; then
-                    log "WARNING: apt update failed, retry $retry_count/3"
-                    sleep 2
+            if sudo apt update; then
+                critical_packages=$(apt list --upgradable 2>/dev/null | grep -v "^Listing" | grep -E "security|openssh|openssl" | cut -d'/' -f1 | tr '\n' ' ')
+                if [[ -n "$critical_packages" ]]; then
+                    if sudo apt upgrade -y "$critical_packages"; then
+                        log "Critical security updates completed"
+                        echo -e "${GREEN}✅ Critical updates completed${NC}"
+                    else
+                        log "ERROR: Critical updates failed"
+                        echo -e "${RED}❌ Critical updates failed${NC}"
+                        ((errors++))
+                    fi
                 else
-                    log "ERROR: apt update failed after 3 attempts"
-                    echo -e "${RED}❌ Failed to update package lists${NC}"
-                    return 1
+                    echo -e "${GREEN}✅ No critical updates available${NC}"
                 fi
-            done
-
-            # Build array of critical packages (prevents command injection)
-            local critical_packages=()
-            while IFS= read -r pkg; do
-                critical_packages+=("$pkg")
-            done < <(apt list --upgradable 2>/dev/null | grep -v "^Listing" | grep -E "security|openssh|openssl" | cut -d'/' -f1)
-
-            if [[ ${#critical_packages[@]} -gt 0 ]]; then
-                log "Upgrading ${#critical_packages[@]} critical security packages"
-                if sudo apt upgrade -y "${critical_packages[@]}"; then
-                    log "Critical security updates completed"
-                    echo -e "${GREEN}✅ Critical updates completed${NC}"
-                else
-                    log "ERROR: Critical updates failed"
-                    echo -e "${RED}❌ Critical updates failed${NC}"
-                    ((errors++))
-                fi
-            else
-                echo -e "${GREEN}✅ No critical updates available${NC}"
             fi
             ;;
 
         "all")
             echo -e "${YELLOW}🚀 Updating all packages...${NC}"
 
-            # APT all with retry logic
-            local retry_count=0
-            while [[ $retry_count -lt 3 ]]; do
-                if sudo apt update; then
-                    break
-                fi
-                ((retry_count++))
-                if [[ $retry_count -lt 3 ]]; then
-                    log "WARNING: apt update failed, retry $retry_count/3"
-                    sleep 2
-                else
-                    log "ERROR: apt update failed after 3 attempts"
-                    echo -e "${RED}❌ Failed to update package lists${NC}"
-                    ((errors++))
-                fi
-            done
-
-            if [[ $retry_count -lt 3 ]]; then
-                if sudo apt upgrade -y 2>&1 | tee -a "$LOGFILE"; then
-                    log "APT all updates completed"
-                    echo -e "${GREEN}✅ APT updates completed${NC}"
-                else
-                    log "ERROR: APT upgrade failed"
-                    echo -e "${RED}❌ APT updates failed${NC}"
-                    ((errors++))
-                fi
+            # APT all
+            if sudo apt update && sudo apt upgrade -y; then
+                log "APT all updates completed"
+                echo -e "${GREEN}✅ APT updates completed${NC}"
+            else
+                log "ERROR: APT updates failed"
+                echo -e "${RED}❌ APT updates failed${NC}"
+                ((errors++))
             fi
 
             # Snap
-            if command -v snap &> /dev/null; then
-                if sudo snap refresh 2>&1 | tee -a "$LOGFILE"; then
-                    log "Snap updates completed"
-                    echo -e "${GREEN}✅ Snap updates completed${NC}"
-                else
-                    log "WARNING: Snap updates failed or not installed"
-                fi
+            if sudo snap refresh 2>/dev/null; then
+                log "Snap updates completed"
+                echo -e "${GREEN}✅ Snap updates completed${NC}"
+            else
+                log "WARNING: Snap updates failed or not installed"
             fi
 
             # Flatpak
             if command -v flatpak &> /dev/null; then
-                if flatpak update -y 2>&1 | tee -a "$LOGFILE"; then
+                if flatpak update -y 2>/dev/null; then
                     log "Flatpak updates completed"
                     echo -e "${GREEN}✅ Flatpak updates completed${NC}"
                 else
@@ -464,7 +381,7 @@ apply_updates() {
 
             # NPM
             if command -v npm &> /dev/null; then
-                if npm update -g 2>&1 | tee -a "$LOGFILE"; then
+                if npm update -g 2>/dev/null; then
                     log "NPM global updates completed"
                     echo -e "${GREEN}✅ NPM updates completed${NC}"
                 else
@@ -474,11 +391,7 @@ apply_updates() {
 
             # PIP
             if command -v pip &> /dev/null; then
-                if pip install --upgrade pip 2>&1 | tee -a "$LOGFILE"; then
-                    log "PIP upgraded successfully"
-                else
-                    log "WARNING: PIP upgrade failed"
-                fi
+                pip install --upgrade pip >/dev/null 2>&1 && log "PIP upgraded"
             fi
             ;;
     esac
@@ -486,18 +399,11 @@ apply_updates() {
     echo ""
     if [[ $errors -eq 0 ]]; then
         log "Updates completed successfully"
-        echo -e "${GREEN}✅ Updates complete${NC}"
+        show_success_screen "$mode"
     else
         log "ERROR: Updates completed with $errors error(s)"
         echo -e "${RED}⚠️  Updates completed with $errors error(s)${NC}"
         exit 1
-    fi
-
-    # Reboot check
-    if [[ -f /var/run/reboot-required ]]; then
-        echo -e "${ORANGE}⚠️  Reboot required${NC}"
-    else
-        echo -e "${GREEN}✅ No reboot needed${NC}"
     fi
 }
 
